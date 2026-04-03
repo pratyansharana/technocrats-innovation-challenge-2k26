@@ -1,20 +1,52 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { auth } from '../config/firebase';
 import '../styles/Navbar.css';
 
 const Navbar: React.FC = () => {
+  const navigate = useNavigate();
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      navigate('/');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
   return (
     <nav className="navbar">
       <div className="nav-items">
         <Link to="/" className="nav-link">
           HOME
         </Link>
-        <Link to="/login" className="nav-link">
-          LOGIN
-        </Link>
-        <Link to="/signup" className="nav-link">
-          SIGN UP
-        </Link>
+        {!user ? (
+          <>
+            <Link to="/login" className="nav-link">
+              LOGIN
+            </Link>
+            <Link to="/signup" className="nav-link">
+              SIGN UP
+            </Link>
+          </>
+        ) : (
+          <button className="nav-logout-btn" onClick={handleLogout}>
+            LOGOUT
+          </button>
+        )}
       </div>
     </nav>
   );
