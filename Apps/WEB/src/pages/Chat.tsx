@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, addDoc, query, orderBy, onSnapshot, Timestamp } from 'firebase/firestore';
 import { db, auth } from '../config/firebase';
 import '../styles/Chat.css';
 
 interface Message {
   id: string;
   text: string;
-  sender: 'user' | 'bot';
-  senderId?: string;
-  timestamp: Date;
+  senderId: string;
+  senderName?: string;
+  timestamp: Timestamp | Date;
 }
 
 interface ChatUser {
@@ -27,60 +27,86 @@ const Chat: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [chatUser, setChatUser] = useState<ChatUser | null>(null);
   const [fetchingUser, setFetchingUser] = useState(!!userId);
+  const currentUser = auth.currentUser;
 
+  // Generate a consistent conversation ID based on two user IDs
+  const getConversationId = (user1Id: string, user2Id: string) => {
+    return [user1Id, user2Id].sort().join('_');
+  };
+
+  const conversationId = currentUser && userId ? getConversationId(currentUser.uid, userId) : null;
+
+  // Fetch the chat user and set up real-time listener
   useEffect(() => {
-    if (userId) {
-      const fetchChatUser = async () => {
-        try {
-          setFetchingUser(true);
-          const userRef = doc(db, 'users', userId);
-          const userSnap = await getDoc(userRef);
-          if (userSnap.exists()) {
-            setChatUser({
-              id: userSnap.id,
-              ...userSnap.data(),
-            });
-          } else {
-            setChatUser(null);
-          }
-        } catch (error) {
-          console.error('Error fetching user:', error);
+    if (!userId) return;
+
+    const fetchChatUser = async () => {
+      try {
+        setFetchingUser(true);
+        const userRef = doc(db, 'users', userId);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          setChatUser({
+            id: userSnap.id,
+            ...userSnap.data() as any,
+          });
+        } else {
           setChatUser(null);
-        } finally {
-          setFetchingUser(false);
         }
-      };
-      fetchChatUser();
-    }
-  }, [userId]);
-
-  const handleSendMessage = async () => {
-    if (!input.trim()) return;
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      text: input,
-      sender: 'user',
-      senderId: auth.currentUser?.uid,
-      timestamp: new Date(),
+      } catch (error) {
+        console.error('Error fetching user:', error);
+        setChatUser(null);
+      } finally {
+        setFetchingUser(false);
+      }
     };
 
-    setMessages((prev) => [...prev, userMessage]);
-    setInput('');
-    setLoading(true);
+    fetchChatUser();
+  }, [userId]);
 
-    // Simulate bot response
-    setTimeout(() => {
-      const botMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: 'Thanks for the message! This is a demo response. Real messaging coming soon!',
-        sender: 'bot',
-        senderId: userId,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, botMessage]);
+  // Set up real-time listener for messages
+  useEffect(() => {
+    if (!conversationId || !currentUser) return;
+
+    try {
+      const messagesRef = collection(db, 'conversations', conversationId, 'messages');
+      const q = query(messagesRef, orderBy('timestamp', 'asc'));
+
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const fetchedMessages: Message[] = [];
+        snapshot.forEach((doc) => {
+          fetchedMessages.push({
+            id: doc.id,
+            ...doc.data() as any,
+          });
+        });
+        setMessages(fetchedMessages);
+      });
+
+      return () => unsubscribe();
+    } catch (error) {
+      console.error('Error setting up message listener:', error);
+    }
+  }, [conversationId, currentUser]);
+
+  const handleSendMessage = async () => {
+    if (!input.trim() || !conversationId || !currentUser) return;
+
+    setLoading(true);
+    try {
+      const messagesRef = collection(db, 'conversations', conversationId, 'messages');
+      await addDoc(messagesRef, {
+        text: input,
+        senderId: currentUser.uid,
+        senderName: currentUser.displayName || 'Anonymous',
+        timestamp: Timestamp.now(),
+      });
+      setInput('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+    } finally {
       setLoading(false);
-    }, 500);
+    }
   };
 
   const handleBackClick = () => {
@@ -91,7 +117,7 @@ const Chat: React.FC = () => {
     return (
       <div className="chat-container">
         <div className="chat-header">
-          <p style={{ color: '#888' }}>Loading user...</p>
+          <p style={{ color: '#ffffff' }}>Loading user...</p>
         </div>
       </div>
     );
@@ -101,7 +127,7 @@ const Chat: React.FC = () => {
     return (
       <div className="chat-container">
         <div className="chat-header">
-          <p style={{ color: '#888' }}>User not found</p>
+          <p style={{ color: '#ffffff' }}>User not found</p>
         </div>
       </div>
     );
@@ -118,6 +144,61 @@ const Chat: React.FC = () => {
           {!chatUser?.photoURL && (
             <div className="chat-user-avatar-placeholder">
               {(chatUser?.displayName || chatUser?.email || 'User')[0]?.toUpperCase()}
+            </div>
+          )}
+          <div>
+            <h1>{chatUser?.displayName || 'Anonymous'}</h1>
+            <p className="chat-user-email">{chatUser?.email || ''}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="chat-messages">
+        {messages.length === 0 ? (
+          <div className="chat-empty">
+            <p>Start a conversation</p>
+          </div>
+        ) : (
+          messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`chat-message ${msg.senderId === currentUser?.uid ? 'user' : 'bot'}`}
+            >
+              <div className="message-content">{msg.text}</div>
+              <div className="message-time">
+                {msg.timestamp instanceof Timestamp 
+                  ? msg.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                }
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="chat-input-container">
+        <input
+          type="text"
+          className="chat-input"
+          placeholder="Type a message..."
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+          disabled={loading}
+        />
+        <button
+          className="chat-send-btn"
+          onClick={handleSendMessage}
+          disabled={loading || !input.trim()}
+        >
+          {loading ? '...' : 'Send'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default Chat;
             </div>
           )}
           <div>
