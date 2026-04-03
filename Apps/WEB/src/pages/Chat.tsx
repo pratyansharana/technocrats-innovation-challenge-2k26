@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { doc, getDoc, collection, addDoc, query, orderBy, onSnapshot, Timestamp } from 'firebase/firestore';
+import { onAuthStateChanged, User } from 'firebase/auth';
 import { db, auth } from '../config/firebase';
 import '../styles/Chat.css';
 
@@ -22,12 +23,14 @@ interface ChatUser {
 const Chat: React.FC = () => {
   const { userId } = useParams<{ userId?: string }>();
   const navigate = useNavigate();
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authResolved, setAuthResolved] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [chatUser, setChatUser] = useState<ChatUser | null>(null);
   const [fetchingUser, setFetchingUser] = useState(!!userId);
-  const currentUser = auth.currentUser;
 
   // Generate a consistent conversation ID based on two user IDs
   const getConversationId = (user1Id: string, user2Id: string) => {
@@ -35,6 +38,15 @@ const Chat: React.FC = () => {
   };
 
   const conversationId = currentUser && userId ? getConversationId(currentUser.uid, userId) : null;
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setAuthResolved(true);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // Fetch the chat user and set up real-time listener
   useEffect(() => {
@@ -81,6 +93,10 @@ const Chat: React.FC = () => {
           });
         });
         setMessages(fetchedMessages);
+        setChatError(null);
+      }, (error) => {
+        console.error('Realtime listener error:', error);
+        setChatError('Unable to load messages. Check Firestore rules and authentication.');
       });
 
       return () => unsubscribe();
@@ -102,8 +118,10 @@ const Chat: React.FC = () => {
         timestamp: Timestamp.now(),
       });
       setInput('');
+      setChatError(null);
     } catch (error) {
       console.error('Error sending message:', error);
+      setChatError('Failed to send message. Check Firestore rules and try again.');
     } finally {
       setLoading(false);
     }
@@ -112,6 +130,26 @@ const Chat: React.FC = () => {
   const handleBackClick = () => {
     navigate('/users');
   };
+
+  if (!authResolved) {
+    return (
+      <div className="chat-container">
+        <div className="chat-header">
+          <p style={{ color: '#ffffff' }}>Checking authentication...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="chat-container">
+        <div className="chat-header">
+          <p style={{ color: '#ffffff' }}>Please login again to continue chatting.</p>
+        </div>
+      </div>
+    );
+  }
 
   if (fetchingUser) {
     return (
@@ -128,6 +166,16 @@ const Chat: React.FC = () => {
       <div className="chat-container">
         <div className="chat-header">
           <p style={{ color: '#ffffff' }}>User not found</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!userId) {
+    return (
+      <div className="chat-container">
+        <div className="chat-header">
+          <p style={{ color: '#ffffff' }}>Open chat from the Users page.</p>
         </div>
       </div>
     );
@@ -154,7 +202,12 @@ const Chat: React.FC = () => {
       </div>
 
       <div className="chat-messages">
-        {messages.length === 0 ? (
+        {chatError && (
+          <div className="chat-empty">
+            <p>{chatError}</p>
+          </div>
+        )}
+        {!chatError && messages.length === 0 ? (
           <div className="chat-empty">
             <p>Start a conversation</p>
           </div>
@@ -166,60 +219,13 @@ const Chat: React.FC = () => {
             >
               <div className="message-content">{msg.text}</div>
               <div className="message-time">
-                {msg.timestamp instanceof Timestamp 
+                {msg.timestamp instanceof Timestamp
                   ? msg.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  : msg.timestamp instanceof Date
+                    ? msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    : ''
                 }
               </div>
-            </div>
-          ))
-        )}
-      </div>
-
-      <div className="chat-input-container">
-        <input
-          type="text"
-          className="chat-input"
-          placeholder="Type a message..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-          disabled={loading}
-        />
-        <button
-          className="chat-send-btn"
-          onClick={handleSendMessage}
-          disabled={loading || !input.trim()}
-        >
-          {loading ? '...' : 'Send'}
-        </button>
-      </div>
-    </div>
-  );
-};
-
-export default Chat;
-            </div>
-          )}
-          <div>
-            <h1>{chatUser?.displayName || 'Anonymous'}</h1>
-            <p className="chat-user-email">{chatUser?.email || ''}</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="chat-messages">
-        {messages.length === 0 ? (
-          <div className="chat-empty">
-            <p>Start a conversation</p>
-          </div>
-        ) : (
-          messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`chat-message ${msg.sender}`}
-            >
-              <div className="message-content">{msg.text}</div>
             </div>
           ))
         )}

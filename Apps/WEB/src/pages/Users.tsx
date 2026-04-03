@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { collection, getDocs } from 'firebase/firestore';
-import { db } from '../config/firebase';
+import { db, auth } from '../config/firebase';
 import '../styles/Users.css';
 
 interface User {
@@ -23,12 +23,13 @@ const Users: React.FC = () => {
     const fetchUsers = async () => {
       try {
         setLoading(true);
+        const currentUserId = auth.currentUser?.uid;
         const usersCollection = collection(db, 'users');
         const usersSnapshot = await getDocs(usersCollection);
         const usersList: User[] = usersSnapshot.docs.map((doc) => ({
           id: doc.id,
           ...doc.data(),
-        }));
+        })).filter((user) => user.id !== currentUserId);
         setUsers(usersList);
         setError(null);
       } catch (err) {
