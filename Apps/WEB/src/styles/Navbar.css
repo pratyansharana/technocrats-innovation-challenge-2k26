@@ -1,15 +1,16 @@
 .navbar {
-  background-color: #000;
+  background-color: #1a1a1a;
   padding: 1rem 2rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-bottom: 1px solid rgba(0, 255, 0, 0.2);
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
 }
 
 .nav-items {
   display: flex;
   gap: 3rem;
+  align-items: center;
 }
 
 .nav-link {
@@ -24,11 +25,31 @@
 }
 
 .nav-link:hover {
-  color: #00ff00;
-  border-bottom-color: #00ff00;
+  color: #999;
+  border-bottom-color: #808080;
 }
 
 .nav-link.active {
-  color: #00ff00;
-  border-bottom-color: #00ff00;
+  color: #ddd;
+  border-bottom-color: #808080;
 }
+
+.nav-logout-btn {
+  background: linear-gradient(135deg, #808080 0%, #606060 100%);
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1.5rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  letter-spacing: 0.5px;
+}
+
+.nav-logout-btn:hover {
+  background: linear-gradient(135deg, #909090 0%, #707070 100%);
+  box-shadow: 0 0 12px rgba(128, 128, 128, 0.3);
+  transform: translateY(-2px);
+}
+
