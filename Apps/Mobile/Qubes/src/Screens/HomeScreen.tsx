@@ -74,7 +74,8 @@ export default function HomeScreen({ navigation }: any) {
       <TouchableOpacity 
         style={styles.chatItemContainer}
         onPress={() => {
-          navigation.navigate('Handshake', { user: item });
+          // Pass the target user so the Handshake screen can generate the Session ID
+          navigation.navigate('Handshake', { targetUser: item });
         }}
         activeOpacity={0.7}
       >

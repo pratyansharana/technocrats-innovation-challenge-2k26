@@ -1,269 +1,423 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, 
   Text, 
   StyleSheet, 
+  ActivityIndicator, 
+  Alert, 
   TouchableOpacity, 
-  TextInput, 
+  SafeAreaView,
+  Modal,
   ScrollView,
-  StatusBar,
-  Alert,
-  Platform
+  Platform,
+  StatusBar
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, { FadeInDown, FadeIn, Layout, ZoomIn } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
+
+// Firebase Firestore Imports
+import { doc, onSnapshot, updateDoc, getDoc, setDoc } from 'firebase/firestore';
+import { db, auth } from '../Firebase/FirebaseConfig'; 
+import { QuantumKeyService } from '../Services/QuantumService';
 
 export default function HandshakeScreen({ route, navigation }: any) {
-  // Safely extract the passed user data (if navigating from the Home screen list)
-  const { user } = route.params || {};
+  // 1. Safely extract params so it never crashes if empty
+  const { sessionId: passedSessionId, targetUser } = route.params || {};
+  const currentUser = auth.currentUser;
+
+  // Generate a unique room ID based on both users' UIDs
+  const sessionId = passedSessionId || (currentUser?.uid && targetUser?.uid 
+    ? [currentUser.uid, targetUser?.uid].sort().join('_') 
+    : 'waiting_room');
   
-  const [nodeId, setNodeId] = useState(user?.uid || '');
-  const [logs, setLogs] = useState<string[]>(['[SYS] Awaiting target identification...']);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [role, setRole] = useState<'alice' | 'bob' | null>(null);
+  const [status, setStatus] = useState('initializing');
+  const [showViz, setShowViz] = useState(false);
+  
+  const aliceDataRef = useRef<{ bits: any[], bases: any[] } | null>(null);
+  const roleLocked = useRef(false);
+  const isAbortingRef = useRef(false);
 
-  // QUBES Theme Colors (Matched exactly to Login Screen)
-  const colors = {
-    background: '#0A0A0A', 
-    text: '#FFFFFF',
-    textSecondary: '#888888',
-    primary: '#00FFCC',    
-    surface: '#1A1A1A',
-    border: '#2A2A2A',
-    terminal: '#050505',
+  // ==========================================
+  // 1. "FIRST TO SHOOT" & ABORT DETECTOR LISTENER
+  // ==========================================
+  useEffect(() => {
+    if (!currentUser) return;
+
+    // Firestore reference to the specific session document
+    const sessionRef = doc(db, 'sessions', sessionId);
+    
+    const unsubscribe = onSnapshot(sessionRef, (snapshot) => {
+      // If the room doesn't exist, create it instead of kicking the user
+      if (!snapshot.exists()) {
+        setDoc(sessionRef, { 
+          status: 'ready_to_start',
+          createdAt: new Date().toISOString() 
+        }, { merge: true });
+        return; 
+      }
+
+      const data = snapshot.data();
+
+      // If the room was reset/aborted by the other user, then kick them out
+      if (roleLocked.current && data.status === 'initializing' && !isAbortingRef.current) {
+        aliceDataRef.current = null; 
+        Alert.alert("Link Severed", "The peer terminated the quantum key exchange.");
+        navigation.replace('Home');
+        return;
+      }
+
+      // 🔐 DYNAMIC ROLE ASSIGNMENT BASED ON 'aliceId'
+      if (!roleLocked.current && data.aliceId) {
+        if (data.aliceId === currentUser.uid) {
+          setRole('alice');
+        } else {
+          setRole('bob');
+        }
+        roleLocked.current = true;
+      }
+
+      // 🚦 STATE MACHINE
+      if (data.handshakeComplete) {
+        if (status !== 'secure') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setStatus('secure');
+      } else if (data.bobBases) {
+        setStatus((role === 'alice' || (roleLocked.current && data.aliceId === currentUser.uid)) ? 'sifting' : 'waiting_for_alice');
+      } else if (data.quantumPayload) {
+        setStatus((role === 'bob' || (roleLocked.current && data.aliceId !== currentUser.uid)) ? 'ready_to_measure' : 'waiting_for_bob');
+      } else if (data.aliceId) {
+        setStatus((role === 'bob' || (roleLocked.current && data.aliceId !== currentUser.uid)) ? 'waiting_for_photons' : 'transmitting');
+      } else {
+        setStatus('ready_to_start');
+      }
+    });
+
+    return () => unsubscribe();
+  }, [sessionId, currentUser]); 
+
+  // ==========================================
+  // 2. CLAIM ALICE ROLE & FIRE PHOTONS
+  // ==========================================
+  const startQuantumTransmission = async () => {
+    if (!currentUser) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    setRole('alice');
+    roleLocked.current = true;
+    setStatus('transmitting');
+    
+    const sessionRef = doc(db, 'sessions', sessionId);
+
+    // Instantly claim the role in Firestore BEFORE the API call
+    await updateDoc(sessionRef, {
+      aliceId: currentUser.uid, 
+      status: 'transmitting'
+    });
+    
+    // Perform the API generation via your custom service
+    const result = await QuantumKeyService.generateAndTransmit(256, false);
+    
+    if (result.success) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      aliceDataRef.current = { bits: result.aliceBits, bases: result.aliceBases };
+
+      await updateDoc(sessionRef, {
+        quantumPayload: result.photonsForBob,
+        status: 'photons_sent'
+      });
+    } else {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Quantum Error", "Vercel API Failed.");
+      
+      setRole(null);
+      roleLocked.current = false;
+      await updateDoc(sessionRef, {
+        aliceId: null, 
+        status: 'ready_to_start'
+      });
+    }
   };
 
-  const addLog = (message: string) => {
-    setLogs(prev => [...prev, message]);
-  };
+  // ==========================================
+  // 3. BOB: MEASURE
+  // ==========================================
+  const measurePhotons = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setStatus('measuring');
+    
+    const sessionRef = doc(db, 'sessions', sessionId);
+    const snap = await getDoc(sessionRef);
+    const photons = snap.data()?.quantumPayload;
 
-  const handleInitialize = () => {
-    if (!nodeId.trim()) {
-      Alert.alert("Input Required", "Please enter a valid Target ID.");
+    if (!photons) {
+      Alert.alert("Error", "No photons to measure.");
+      setStatus('ready_to_measure');
       return;
     }
 
-    setIsConnecting(true);
-    setLogs(['[SYS] Initiating BB84 Quantum Handshake...']);
+    const bobBases = photons.map(() => Math.random() > 0.5 ? 'X' : '+');
+    
+    await updateDoc(sessionRef, {
+      bobBases: bobBases,
+    });
+  };
 
-    // Simulate a cryptographic handshake sequence
-    setTimeout(() => addLog('[SEC] Resolving address protocol...'), 800);
-    setTimeout(() => addLog('[SEC] Exchanging ephemeral keys...'), 1600);
-    setTimeout(() => addLog('[SEC] Establishing shared secret...'), 2600);
-    setTimeout(() => {
-      addLog('[SUCCESS] Zero Trace channel established.');
-      setIsConnecting(false);
-      Alert.alert("Connection Established", "Secure node has been verified and added.", [
-        { text: "Continue", onPress: () => navigation.goBack() }
-      ]);
-    }, 3500);
+  // ==========================================
+  // 4. ALICE: AUTOMATIC SIFTING TRIGGER
+  // ==========================================
+  useEffect(() => {
+    if (role === 'alice') {
+      const sessionRef = doc(db, 'sessions', sessionId);
+      
+      const unsubscribeSift = onSnapshot(sessionRef, async (snapshot) => {
+        if (!snapshot.exists()) return;
+        const data = snapshot.data();
+        const bobBases = data.bobBases;
+        
+        if (bobBases && aliceDataRef.current) {
+          const matchingIndexes = aliceDataRef.current.bases
+            .map((b, i) => b === bobBases[i] ? i : null)
+            .filter(v => v !== null);
+
+          // If handshake isn't already complete, finalize it
+          if (!data.handshakeComplete) {
+            await updateDoc(sessionRef, {
+              matchingIndexes: matchingIndexes,
+              handshakeComplete: true
+            });
+          }
+        }
+      });
+
+      return () => unsubscribeSift();
+    }
+  }, [role, sessionId]);
+
+  // ==========================================
+  // 5. ABORT HANDSHAKE
+  // ==========================================
+  const killSession = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    
+    isAbortingRef.current = true; 
+    aliceDataRef.current = null; 
+    
+    const sessionRef = doc(db, 'sessions', sessionId);
+    await updateDoc(sessionRef, {
+      handshakeComplete: false,
+      quantumPayload: null,
+      bobBases: null,
+      matchingIndexes: null,
+      aliceId: null, 
+      status: 'initializing'
+    });
+    
+    navigation.replace('Home');
+  };
+
+  // --- UI HELPERS ---
+  const getStatusMessage = () => {
+    switch(status) {
+      case 'initializing': return "WAKING UP QUANTUM CHANNEL...";
+      case 'ready_to_start': return "CHANNEL IDLE. READY TO INITIATE.";
+      case 'waiting_for_photons': return "PEER IS PREPARING PHOTONS..."; 
+      case 'transmitting': return "FIRING 256 POLARIZED PHOTONS...";
+      case 'waiting_for_bob': return "PHOTONS IN TRANSIT. AWAITING BOB.";
+      case 'ready_to_measure': return "PHOTONS ARRIVED. READY TO MEASURE.";
+      case 'measuring': return "APPLYING RANDOM MEASUREMENT BASES...";
+      case 'waiting_for_alice': return "BASES SENT. AWAITING ALICE'S SIFTING.";
+      case 'sifting': return "COMPARING BASES. DISCARDING MISMATCHES...";
+      case 'secure': return "AES-256 KEY GENERATED SUCCESSFULLY.";
+      default: return status.toUpperCase();
+    }
   };
 
   return (
-    <SafeAreaView style={[styles.mainContainer, { backgroundColor: colors.background }]}>
-      <StatusBar barStyle="light-content" />
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#0A0A0A" />
       
-      {/* HEADER */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
-          <Text style={styles.backIcon}>X</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>INITIALIZE NODE</Text>
-        <View style={{ width: 40 }} /> {/* Spacer to balance the header */}
-      </View>
+      <Animated.View entering={FadeInDown.duration(600)} layout={Layout.springify()} style={styles.card}>
+        
+        <View style={styles.header}>
+          <Text style={styles.monoTextTny}>SECURE PROTOCOL // BB84</Text>
+          <Text style={styles.title}>LINK HANDSHAKE</Text>
+          <Text style={styles.partnerText}>TARGET: <Text style={{fontWeight: '900', color: '#FFFFFF'}}>{targetUser?.name?.toUpperCase() || 'UNKNOWN PEER'}</Text></Text>
+        </View>
+        
+        <View style={styles.divider} />
+        
+        <Animated.View entering={ZoomIn.delay(300)} style={[styles.roleBadge, { 
+          backgroundColor: role ? 'rgba(0, 255, 204, 0.05)' : '#050505',
+          borderColor: role ? '#00FFCC' : '#2A2A2A'
+        }]}>
+          <Text style={[styles.roleText, { color: role ? '#00FFCC' : '#888888' }]}>
+            {role ? `IDENTITY LOCKED: ${role.toUpperCase()}` : 'AWAITING INITIATOR...'}
+          </Text>
+        </Animated.View>
 
-      {/* CONTENT AREA */}
-      <View style={styles.contentArea}>
-        <View style={styles.inputContainer}>
-          <Text style={styles.inputLabel}>TARGET IDENTIFIER</Text>
-          <TextInput
-            style={styles.textInput}
-            placeholder="e.g. QUBES-9X8V..."
-            placeholderTextColor={colors.textSecondary}
-            value={nodeId}
-            onChangeText={setNodeId}
-            autoCapitalize="characters"
-            editable={!isConnecting}
-            autoCorrect={false}
-          />
-          <Text style={styles.helperText}>
-            Enter the target's cryptographic seed to establish a Zero Trace tunnel.
+        <View style={styles.hudContainer}>
+          <Text style={styles.hudLabel}>PROTOCOL STATUS</Text>
+          <Text style={[styles.hudValue, { color: status === 'secure' ? '#00FFCC' : '#FFFFFF' }]}>
+            {getStatusMessage()}
           </Text>
         </View>
-      </View>
 
-      {/* TERMINAL LOGS */}
-      <View style={[styles.terminalContainer, { borderColor: colors.border, backgroundColor: colors.terminal }]}>
-        <View style={[styles.terminalHeader, { borderBottomColor: colors.border }]}>
-          <Text style={styles.terminalTitle}>PROTOCOL LOG</Text>
+        {/* NEUTRAL / ALICE BUTTON */}
+        {(role === null || role === 'alice') && status === 'ready_to_start' && (
+          <Animated.View entering={FadeIn}>
+            <TouchableOpacity style={styles.primaryBtn} onPress={startQuantumTransmission} activeOpacity={0.8}>
+              <Text style={styles.btnText}>INITIATE QUANTUM TRANSMISSION</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
+        {/* BOB BUTTON */}
+        {role === 'bob' && status === 'ready_to_measure' && (
+          <Animated.View entering={FadeIn}>
+            <TouchableOpacity style={styles.primaryBtn} onPress={measurePhotons} activeOpacity={0.8}>
+              <Text style={styles.btnText}>EXECUTE MEASUREMENT</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
+        {(status.includes('waiting') || status === 'sifting' || status === 'transmitting' || status === 'measuring') && (
+          <Animated.View entering={FadeIn} style={styles.loaderBox}>
+            <ActivityIndicator size="large" color="#00FFCC" />
+            <Text style={styles.loaderText}>SYNCING VIA SECURE RELAY...</Text>
+          </Animated.View>
+        )}
+
+        {/* SUCCESS STATE */}
+        {status === 'secure' && (
+          <Animated.View entering={ZoomIn.springify()} style={styles.secureBox}>
+            <Text style={styles.secureTitle}>SECURE LINK ESTABLISHED</Text>
+            <TouchableOpacity 
+              style={[styles.primaryBtn, { width: '100%', marginTop: 10, shadowColor: 'transparent' }]} 
+              onPress={() => {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                navigation.replace('Chat', { sessionId, targetUser });
+              }}
+            >
+              <Text style={styles.btnText}>ENTER ENCRYPTED CHAT 〉</Text>
+            </TouchableOpacity>
+            
+            {role === 'alice' && (
+              <TouchableOpacity onPress={() => setShowViz(true)} style={styles.vizBtn}>
+                <Text style={styles.vizBtnText}>VIEW QUANTUM METRICS</Text>
+              </TouchableOpacity>
+            )}
+          </Animated.View>
+        )}
+
+        {/* KILL SWITCH */}
+        {status !== 'secure' && (
+          <TouchableOpacity style={styles.killBtn} onPress={killSession}>
+            <Text style={styles.killBtnText}>[ ABORT PROTOCOL ]</Text>
+          </TouchableOpacity>
+        )}
+      </Animated.View>
+
+      {/* METRICS MODAL */}
+      <Modal visible={showViz} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <SafeAreaView style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>BB84 TERMINAL</Text>
+              <TouchableOpacity onPress={() => setShowViz(false)} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                <Text style={styles.closeBtn}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView showsVerticalScrollIndicator={false}>
+               <Text style={styles.label}>ALICE'S PREPARED BASES (LOCAL MEMORY)</Text>
+               <View style={styles.terminalBox}>
+                 <Text style={styles.terminalText}>{aliceDataRef.current?.bases.slice(0, 50).join('')}...</Text>
+               </View>
+
+               <Text style={styles.label}>ALICE'S PREPARED BITS (LOCAL MEMORY)</Text>
+               <View style={styles.terminalBox}>
+                 <Text style={styles.terminalText}>{aliceDataRef.current?.bits.slice(0, 50).join('')}...</Text>
+               </View>
+               
+               <View style={styles.infoCard}>
+                  <Text style={styles.infoTitle}>SIFTING COMPLETE</Text>
+                  <Text style={styles.infoText}>
+                    The backend simulated the Quantum Channel. Bob randomly guessed the measurement bases. Only the indexes where Bob's bases perfectly matched Alice's were kept. The resulting bitstring forms the AES-256 key.
+                  </Text>
+               </View>
+            </ScrollView>
+          </SafeAreaView>
         </View>
-        <ScrollView style={styles.terminalBody} showsVerticalScrollIndicator={false}>
-          {logs.map((log, index) => (
-            <Text key={index} style={[
-              styles.terminalText,
-              log.includes('[SUCCESS]') && { color: colors.primary },
-              log.includes('[SEC]') && { color: '#AAAAAA' }
-            ]}>
-              {log}
-            </Text>
-          ))}
-        </ScrollView>
-      </View>
-
-      {/* ACTION BUTTON (Matched to Login Screen) */}
-      <View style={styles.footer}>
-        <TouchableOpacity 
-          style={[
-            styles.actionButton, 
-            isConnecting ? styles.actionButtonDisabled : { backgroundColor: colors.primary }
-          ]}
-          onPress={handleInitialize}
-          disabled={isConnecting}
-        >
-          <View style={styles.buttonInner}>
-            <Text style={[
-              styles.actionButtonText, 
-              isConnecting ? { color: colors.textSecondary } : { color: '#000000' }
-            ]}>
-              {isConnecting ? 'NEGOTIATING KEYS...' : 'CONNECT NODE'}
-            </Text>
-            {!isConnecting && <Text style={styles.chevronIcon}> ➔</Text>}
-          </View>
-        </TouchableOpacity>
-      </View>
-
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  mainContainer: { 
-    flex: 1,
+  container: { flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', padding: 20 },
+  card: { 
+    backgroundColor: '#1A1A1A', 
+    padding: 30, 
+    borderRadius: 24, 
+    borderWidth: 1, 
+    borderColor: '#2A2A2A', 
+    elevation: 10, 
+    shadowColor: '#00FFCC', 
+    shadowOpacity: 0.05, 
+    shadowRadius: 20, 
+    shadowOffset: {width: 0, height: 10} 
   },
-  header: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center',
-    paddingHorizontal: 15,
-    paddingTop: 15,
-    paddingBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
-  },
-  backBtn: {
-    padding: 10,
-    backgroundColor: '#1A1A1A',
-    borderRadius: 12,
-  },
-  backIcon: {
-    fontSize: 22,
-    color: '#9CA3AF',
-    fontWeight: '300',
-  },
-  headerTitle: {
-    fontSize: 16,
-    fontWeight: '900',
-    color: '#FFFFFF',
-    letterSpacing: 2,
-  },
-  contentArea: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-  },
-  inputContainer: {
-    width: '100%',
-  },
-  inputLabel: {
-    color: '#00FFCC',
-    fontSize: 12,
-    fontWeight: 'bold',
-    letterSpacing: 2,
-    marginBottom: 10,
-    marginLeft: 5,
-  },
-  textInput: {
-    backgroundColor: '#1A1A1A',
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    padding: 18,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#2A2A2A',
-    letterSpacing: 2,
-    textAlign: 'center',
-  },
-  helperText: {
-    color: '#888888',
-    fontSize: 13,
-    marginTop: 16,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  terminalContainer: {
-    height: 180,
-    marginHorizontal: 20,
-    marginBottom: 24,
-    borderRadius: 14,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  terminalHeader: {
-    backgroundColor: '#111111',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-  },
-  terminalTitle: {
-    color: '#555555',
-    fontSize: 11,
-    fontWeight: 'bold',
-    letterSpacing: 2,
-  },
-  terminalBody: {
-    padding: 16,
-  },
-  terminalText: {
-    color: '#00FFCC',
-    fontSize: 12,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    marginBottom: 8,
-  },
-  footer: {
-    paddingHorizontal: 24,
-    paddingBottom: 40,
-  },
-  actionButton: {
+  header: { alignItems: 'center' },
+  monoTextTny: { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 10, color: '#888888', letterSpacing: 2, marginBottom: 8 },
+  title: { fontSize: 26, fontWeight: '900', color: '#FFFFFF', letterSpacing: 2 },
+  partnerText: { fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', color: '#888888', marginTop: 10, letterSpacing: 1 },
+  divider: { height: 1, backgroundColor: '#2A2A2A', marginVertical: 24 },
+  
+  roleBadge: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 12, borderWidth: 1, alignSelf: 'center', marginBottom: 25 },
+  roleText: { fontSize: 11, fontWeight: '900', letterSpacing: 1, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  
+  hudContainer: { backgroundColor: '#050505', padding: 20, borderRadius: 12, borderWidth: 1, borderColor: '#2A2A2A', marginBottom: 30 },
+  hudLabel: { fontSize: 10, fontWeight: 'bold', color: '#888888', letterSpacing: 1.5, marginBottom: 8, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  hudValue: { fontSize: 14, fontWeight: 'bold', lineHeight: 22, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  
+  primaryBtn: { 
+    backgroundColor: '#0A0A0A', 
     paddingVertical: 18, 
-    paddingHorizontal: 30, 
-    borderRadius: 14, 
-    width: '100%',
-    shadowColor: "#00FFCC",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    elevation: 5,
-  },
-  actionButtonDisabled: {
-    backgroundColor: '#1A1A1A',
-    borderWidth: 1,
-    borderColor: '#2A2A2A',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  buttonInner: { 
-    flexDirection: 'row', 
+    borderRadius: 12, 
     alignItems: 'center', 
-    justifyContent: 'center' 
+    borderWidth: 1, 
+    borderColor: '#00FFCC', 
+    shadowColor: '#00FFCC', 
+    shadowOpacity: 0.2, 
+    shadowRadius: 8, 
+    shadowOffset: {width: 0, height: 0}, 
+    elevation: 5 
   },
-  actionButtonText: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    letterSpacing: 1,
-  },
-  chevronIcon: { 
-    fontWeight: 'bold', 
-    fontSize: 18, 
-    marginLeft: 4, 
-    color: '#000000' 
-  },
+  btnText: { color: '#00FFCC', fontWeight: '900', fontSize: 13, letterSpacing: 1.5, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  
+  loaderBox: { alignItems: 'center', paddingVertical: 15 },
+  loaderText: { marginTop: 15, color: '#888888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  
+  secureBox: { backgroundColor: 'rgba(0, 255, 204, 0.05)', padding: 24, borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: '#00FFCC' },
+  secureTitle: { color: '#00FFCC', fontWeight: '900', fontSize: 14, marginBottom: 15, letterSpacing: 1, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  vizBtn: { marginTop: 20, padding: 10 },
+  vizBtnText: { color: '#888888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  
+  killBtn: { marginTop: 30, alignSelf: 'center', padding: 10 },
+  killBtnText: { color: '#FF3366', fontSize: 11, fontWeight: '900', letterSpacing: 1, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+
+  // Modal styling
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(10, 10, 10, 0.9)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#1A1A1A', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 30, maxHeight: '85%', borderWidth: 1, borderColor: '#2A2A2A' },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25 },
+  modalTitle: { fontSize: 20, fontWeight: '900', color: '#FFFFFF', letterSpacing: 2 },
+  closeBtn: { fontSize: 24, color: '#888888', fontWeight: 'bold' },
+  
+  label: { fontSize: 10, fontWeight: 'bold', color: '#888888', marginBottom: 8, marginTop: 20, letterSpacing: 1.5, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  terminalBox: { backgroundColor: '#050505', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#2A2A2A' },
+  terminalText: { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 13, color: '#00FFCC', lineHeight: 20 },
+  
+  infoCard: { backgroundColor: 'rgba(0, 255, 204, 0.05)', padding: 20, borderRadius: 12, marginTop: 30, borderWidth: 1, borderColor: '#2A2A2A' },
+  infoTitle: { fontSize: 12, fontWeight: '900', color: '#00FFCC', marginBottom: 8, letterSpacing: 1 },
+  infoText: { fontSize: 12, color: '#888888', lineHeight: 20, fontWeight: 'bold' }
 });
