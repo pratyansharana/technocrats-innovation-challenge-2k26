@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "269944139760",
+    "project_id": "qubes-tic",
+    "storage_bucket": "qubes-tic.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:269944139760:android:61068fc7c7223b0c1f7735",
+        "android_client_info": {
+          "package_name": "com.pratyansh_rana.Qubes"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAb5T4IPF7IGKAnZfMtO0iboFpUNYLhueY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
