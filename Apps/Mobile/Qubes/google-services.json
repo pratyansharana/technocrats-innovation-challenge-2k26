@@ -12,7 +12,20 @@
           "package_name": "com.pratyansh_rana.Qubes"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "269944139760-clr855gt90tv4264j0gurq4p5t9u7d23.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pratyansh_rana.Qubes",
+            "certificate_hash": "c01d386bc7051b4b3bb52a9c3bdd05350ad43ad4"
+          }
+        },
+        {
+          "client_id": "269944139760-q234ltc97girn2den46893ra6foq0c0o.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyAb5T4IPF7IGKAnZfMtO0iboFpUNYLhueY"
@@ -20,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "269944139760-q234ltc97girn2den46893ra6foq0c0o.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
