@@ -18,6 +18,21 @@ import { db, auth, storage } from '../Firebase/FirebaseConfig';
 import { CryptoService } from '../Services/CryptoService';
 import { QuantumKeyService } from '../Services/QuantumService';
 
+// ==========================================
+// 🛡️ CONTENT MODERATION ENGINE
+// ==========================================
+// Add any words you want to block during your hackathon demo here
+const BLOCKED_WORDS = ['hack', 'scam', 'phishing', 'malware', 'badword']; 
+
+const containsBlockedWords = (text: string) => {
+  return BLOCKED_WORDS.some(word => {
+    // \b ensures we only block exact words (so blocking "ass" doesn't block "class")
+    // 'i' makes it case-insensitive (blocks "SCAM", "Scam", "scam")
+    const regex = new RegExp(`\\b${word}\\b`, 'i'); 
+    return regex.test(text);
+  });
+};
+
 export default function ChatScreen({ route, navigation }: any) {
   const { sessionId, targetUser } = route.params;
   
@@ -339,12 +354,26 @@ export default function ChatScreen({ route, navigation }: any) {
   // ==========================================
   // 6. CUSTOM SEND MESSAGE HANDLER
   // ==========================================
+  // ==========================================
+  // 6. CUSTOM SEND MESSAGE HANDLER
+  // ==========================================
   const handleSend = async () => {
     if (!inputText.trim() || !secureKey || !currentUser) return;
+
+    // 🔥 THE FIX: Check for blocked words before encrypting
+    if (containsBlockedWords(inputText)) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        "Transmission Blocked", 
+        "Your message contains prohibited keywords and violates network policy."
+      );
+      return; // 🛑 This immediately stops the message from sending
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     
     const textToSend = inputText.trim();
-    setInputText(""); 
+    setInputText("");
     
     const encryptedText = CryptoService.encryptMessage(textToSend, secureKey);
     const messagesRef = collection(db, 'sessions', sessionId, 'messages');

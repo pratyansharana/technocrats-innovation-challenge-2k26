@@ -6,7 +6,7 @@
 ![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 
-**🔐 Secure Encrypted Chat Platform with Cross-Platform Support**
+**🔐 Mobile First Secure Encrypted Chat Platform with Cross-Platform Support**
 
 ---
 
@@ -14,9 +14,10 @@
 
 | Platform | Link | Status |
 |----------|------|--------|
+| 📱 **Android APK** | [Download](https://drive.google.com/file/d/1fDvJbFAWwSETb2a1gJnAhawTiEK3nhlX/view?usp=sharing) | ✅ Available |
 | 🌍 **Web Application** | [https://web-anadi-guptas-projects.vercel.app/](https://web-anadi-guptas-projects.vercel.app/) | ✅ Live |
 | 💬 **Chat Portal** | [https://technocrats-innovation-challenge-2k.vercel.app/](https://technocrats-innovation-challenge-2k.vercel.app/) | ✅ Live |
-| 📱 **Android APK** | [Download](https://drive.google.com/file/d/1fDvJbFAWwSETb2a1gJnAhawTiEK3nhlX/view?usp=sharing) | ✅ Available |
+
 
 ---
 
