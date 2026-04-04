@@ -20,10 +20,11 @@ import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Firestore Imports
-import { doc, collection, onSnapshot, addDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, collection, onSnapshot, addDoc, updateDoc, serverTimestamp, getDocs, query, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../Firebase/FirebaseConfig'; 
 import { CryptoService } from '../Services/CryptoService';
 import { QuantumKeyService } from '../Services/QuantumService';
+
 
 export default function ChatScreen({ route, navigation }: any) {
   const { sessionId, targetUser } = route.params;
@@ -88,13 +89,32 @@ export default function ChatScreen({ route, navigation }: any) {
       if (!snapshot.exists()) return;
       const data = snapshot.data();
 
-      if (isReady && data.status === 'initializing' && !isExitingRef.current) {
+// 🔥 Match Web Logic: If the room was aborted by the peer, burn local cache and kick out
+      const wasAborted = data.status === 'initializing' && !!data.abortedAt;
+      
+      if (wasAborted && !isExitingRef.current) {
         isExitingRef.current = true;
+        
+        // 1. Instantly clear Bob's UI
+        setMessages([]);
+        localCacheRef.current = {};
+        
+        // 🔥 ADDED AWAIT: Force the phone to finish deleting before moving on
+        await AsyncStorage.removeItem(`chat_${sessionId}`);
+        
+        // 2. Alert and Boot
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
         Alert.alert(
           "LINK SEVERED",
-          "Your peer closed the chat. The ephemeral key has been destroyed to maintain Perfect Forward Secrecy.",
-          [{ text: "Return to Directory", onPress: () => navigation.replace('Home') }]
+          "Your peer aborted the sequence. All keys and messages have been permanently destroyed.",
+          [
+            { 
+              text: "Return to Directory", 
+              // Wait for them to tap this before navigating away!
+              onPress: () => navigation.replace('Home') 
+            }
+          ],
+          { cancelable: false } // Force them to click the button
         );
         return;
       }
@@ -140,7 +160,7 @@ export default function ChatScreen({ route, navigation }: any) {
     return () => unsubscribe();
   }, [sessionId, currentUser, isRekeyingOverlay, isReady]);
 
-  // ==========================================
+// ==========================================
   // 3. LISTEN FOR MESSAGES (FIRESTORE)
   // ==========================================
   useEffect(() => {
@@ -149,6 +169,10 @@ export default function ChatScreen({ route, navigation }: any) {
     const messagesRef = collection(db, 'sessions', sessionId, 'messages');
     
     const unsubscribe = onSnapshot(messagesRef, (snapshot) => {
+      // 🔥 THE FIX: If we are aborting/exiting, kill this listener instantly 
+      // so it stops re-saving to AsyncStorage!
+      if (isExitingRef.current) return; 
+
       const serverData: Record<string, any> = {};
       snapshot.forEach((docSnap) => {
         serverData[docSnap.id] = docSnap.data();
@@ -171,7 +195,6 @@ export default function ChatScreen({ route, navigation }: any) {
 
         let decryptedText = "[ DECRYPTION FAILED ]";
         let isLegacy = true;
-
         try {
           decryptedText = CryptoService.decryptMessage(msg.text, secureKey);
           isLegacy = decryptedText.includes("Error") || !decryptedText;
@@ -280,6 +303,67 @@ export default function ChatScreen({ route, navigation }: any) {
     return unsubscribe;
   }, [navigation, sessionId]);
 
+
+
+  // ==========================================
+  // 5.5 ABORT SEQUENCE (SCORCHED EARTH - MOBILE)
+  // ==========================================
+  const handleAbortSequence = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    Alert.alert(
+      "INITIATE ABORT SEQUENCE",
+      "This will permanently sever the quantum link, wipe local memory, and DELETE ALL MESSAGES from the cloud. Proceed?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "BURN EVERYTHING", 
+          style: "destructive", 
+          onPress: async () => {
+            if (!currentUser || isExitingRef.current) return;
+            isExitingRef.current = true;
+            
+            try {
+              // 1. Instantly clear UI
+              setMessages([]);
+              localCacheRef.current = {};
+              
+              // 🔥 2. AWAIT the device wipe
+              await AsyncStorage.removeItem(`chat_${sessionId}`);
+              
+              // 🔥 3. AWAIT the cloud wipe
+              const messagesRef = collection(db, 'sessions', sessionId, 'messages');
+              const snapshot = await getDocs(query(messagesRef));
+              if (!snapshot.empty) {
+                const deletePromises = snapshot.docs.map(docSnap => deleteDoc(docSnap.ref));
+                await Promise.all(deletePromises); 
+              }
+              
+              // 🔥 4. AWAIT the signal to Bob
+              await updateDoc(doc(db, 'sessions', sessionId), {
+                handshakeComplete: false,
+                quantumPayload: null,
+                bobBases: null,
+                matchingIndexes: null,
+                aliceId: null, 
+                status: 'initializing',
+                abortedAt: new Date().toISOString(), 
+                abortedBy: currentUser.uid
+              });
+
+              // 5. ONLY navigate after all awaits are 100% finished
+              navigation.replace('Home');
+
+            } catch (error) {
+              console.error('Abort cleanup failed:', error);
+              Alert.alert("Error", "Check your connection. Deletion may have partially failed.");
+              isExitingRef.current = false; // Unlock if it failed
+            }
+          }
+        }
+      ]
+    );
+  };
+
   // ==========================================
   // 6. CUSTOM SEND MESSAGE HANDLER
   // ==========================================
@@ -387,9 +471,16 @@ export default function ChatScreen({ route, navigation }: any) {
               </View>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.rekeyBtn} onPress={handleRekey} activeOpacity={0.7}>
-               <Text style={styles.rekeyBtnText}>[ REKEY ]</Text>
-            </TouchableOpacity>
+            <View style={styles.headerButtons}>
+              <TouchableOpacity style={styles.rekeyBtn} onPress={handleRekey} activeOpacity={0.7}>
+                 <Text style={styles.rekeyBtnText}>[ REKEY ]</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.abortBtn} onPress={handleAbortSequence} activeOpacity={0.7}>
+                 <Text style={styles.abortBtnText}>[ ERASE ]</Text>
+              </TouchableOpacity>
+            </View>
+            
           </View>
         </Animated.View>
 
@@ -492,6 +583,9 @@ const styles = StyleSheet.create({
   rekeyBtn: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#1A1A1A', borderRadius: 8, borderWidth: 1, borderColor: '#2A2A2A' },
   rekeyBtnText: { color: '#00FFCC', fontSize: 10, fontWeight: '900', letterSpacing: 1, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
 
+  headerButtons: { flexDirection: 'row', gap: 8 },
+  abortBtn: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#1A1A1A', borderRadius: 8, borderWidth: 1, borderColor: '#FF3366' },
+  abortBtnText: { color: '#FF3366', fontSize: 10, fontWeight: '900', letterSpacing: 1, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
   // Custom Chat List Styles
   flatListContent: { paddingHorizontal: 15, paddingVertical: 20, gap: 10 },
   
