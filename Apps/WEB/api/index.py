@@ -60,6 +60,7 @@ def _simulate(payload: TransmissionRequest) -> dict:
     return {
         "status": "success",
         "received_states": received_states,
+        "eavesdropping_active": payload.eavesdropperActive
     }
 
 

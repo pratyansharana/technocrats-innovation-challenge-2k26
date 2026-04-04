@@ -117,6 +117,28 @@ export default function HandshakeScreen({ route, navigation }: any) {
     // Perform the API generation via your custom service
     const result = await QuantumKeyService.generateAndTransmit(256, false);
     
+    // ⚠️ CHECK FOR EAVESDROPPING DETECTION
+    if (result.eavesdropping_detected) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      
+      // Reset the session immediately
+      setRole(null);
+      roleLocked.current = false;
+      await updateDoc(sessionRef, {
+        aliceId: null,
+        status: 'initializing'
+      });
+      
+      // Alert the user about the compromise
+      Alert.alert(
+        "🚨 SECURE CHANNEL COMPROMISED 🚨",
+        "EAVESDROPPING DETECTED!\n\nUnauthorized quantum interference detected on the transmission channel. The BB84 protocol has automatically aborted to maintain security.\n\nReason: Observer effect detected due to unauthorized basis measurement.\n\nThis handshake is INVALID. Do not proceed.",
+        [{ text: "Return to Directory", onPress: () => navigation.replace('Home') }],
+        { cancelable: false }
+      );
+      return;
+    }
+    
     if (result.success) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       aliceDataRef.current = { bits: result.aliceBits, bases: result.aliceBases };

@@ -6,9 +6,10 @@ export interface QuantumExchangeResponse {
   aliceBits: Bit[];
   aliceBases: Basis[];
   photonsForBob: number[];
+  eavesdropping_detected?: boolean;
 }
 
-const VERCEL_API_BASE = "https://qubesapi.vercel.app/api";
+const VERCEL_API_BASE = "https://technocrats-innovation-challenge-2k.vercel.app/api";
 
 export const QuantumKeyService = {
 
@@ -54,12 +55,14 @@ const response = await fetch(fullUrl, {
 
       const data = await response.json();
       console.log("[QuantumLink] Photons Received Successfully");
+      console.log("[QuantumLink] Eavesdropping Active:", data.eavesdropping_active);
 
       return {
         success: true,
         aliceBits,
         aliceBases,
-        photonsForBob: data.received_states 
+        photonsForBob: data.received_states,
+        eavesdropping_detected: data.eavesdropping_active || false
       };
     } catch (error: any) {
       console.error("[QuantumLink] CRITICAL FAILURE:", error.message);

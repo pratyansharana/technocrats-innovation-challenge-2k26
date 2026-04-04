@@ -31,6 +31,14 @@
       "eas": {
         "projectId": "43a4e054-e4bc-4213-bbcf-5de0b78885f1"
       }
+    },
+    "owner": "pratyansh_rana",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/43a4e054-e4bc-4213-bbcf-5de0b78885f1",
+      "fallbackToCacheTimeout": 0
     }
   }
 }
