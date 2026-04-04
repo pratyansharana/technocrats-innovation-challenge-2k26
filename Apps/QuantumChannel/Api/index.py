@@ -85,3 +85,9 @@ def toggle_eavesdropping():
         "status": "ENABLED ⚠️" if EAVESDROPPING_ENABLED else "DISABLED ✓",
         "message": f"Eavesdropping detection is now {('ENABLED' if EAVESDROPPING_ENABLED else 'DISABLED')}"
     }
+
+
+# Vercel handler (required for serverless)
+from mangum import Asgi
+
+handler = Asgi(app)
